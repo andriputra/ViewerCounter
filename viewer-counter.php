@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Viewer Counter
  * Plugin URI: https://flexbox.my.id/viewer-counter
- * Description: Pelawat unik (harian, mingguan, bulanan, keseluruhan), tetapan paparan, shortcode, dan dashboard admin bergrafik.
- * Version: 1.2.0
+ * Description: Unique visitors (daily, weekly, monthly, all-time), display settings, shortcode, and admin charts dashboard.
+ * Version: 1.2.1
  * Author: Agus Andri Putra
  * Author URI: https://flexbox.my.id
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('VIEWER_COUNTER_VERSION', '1.2.0');
+define('VIEWER_COUNTER_VERSION', '1.2.1');
 define('VIEWER_COUNTER_OPTION', 'viewer_counter_settings');
 define('VIEWER_COUNTER_COOKIE', 'wp_vc_vid');
 define('VIEWER_COUNTER_COOKIE_DAYS', 400);
@@ -42,7 +42,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * URL lama Tetapan → Viewer Counter (options-general.php?page=viewer-counter).
+     * Legacy Settings → Viewer Counter URL (options-general.php?page=viewer-counter).
      */
     public function maybe_redirect_legacy_options_page() {
         if (!is_admin() || !current_user_can('manage_options')) {
@@ -58,21 +58,21 @@ final class Viewer_Counter {
     }
 
     /**
-     * Kunci paparan yang sah (tertib paparan).
+     * Allowed display keys (output order).
      */
     public static function display_keys() {
         return array('daily', 'weekly', 'monthly', 'total');
     }
 
     /**
-     * Label ringkas untuk setiap kunci (Bahasa Indonesia).
+     * Short labels for each display key.
      */
     public static function display_labels() {
         return array(
-            'daily'   => __('Harian', 'viewer-counter'),
-            'weekly'  => __('Mingguan', 'viewer-counter'),
-            'monthly' => __('Bulanan', 'viewer-counter'),
-            'total'   => __('Keseluruhan', 'viewer-counter'),
+            'daily'   => __('Daily', 'viewer-counter'),
+            'weekly'  => __('Weekly', 'viewer-counter'),
+            'monthly' => __('Monthly', 'viewer-counter'),
+            'total'   => __('All-time', 'viewer-counter'),
         );
     }
 
@@ -95,10 +95,10 @@ final class Viewer_Counter {
     }
 
     /**
-     * Ubah tetapan / shortcode menjadi senarai kunci paparan mengikut tertib.
+     * Resolve settings / shortcode into an ordered list of display keys.
      *
-     * @param string|null $show_attr Atribut shortcode `show`, contoh: "daily,total". Null = guna tetapan laman.
-     * @param array|null  $widget_flags Kunci show_* dari instance widget; null = abaikan.
+     * @param string|null $show_attr Shortcode `show` attribute, e.g. "daily,total". Null = use site settings.
+     * @param array|null  $widget_flags Widget instance show_* keys; null = ignore.
      */
     public function resolve_display_keys($show_attr = null, $widget_flags = null) {
         $keys = array();
@@ -160,8 +160,8 @@ final class Viewer_Counter {
         );
         add_submenu_page(
             'viewer-counter',
-            __('Tetapan', 'viewer-counter'),
-            __('Tetapan', 'viewer-counter'),
+            __('Settings', 'viewer-counter'),
+            __('Settings', 'viewer-counter'),
             'manage_options',
             'viewer-counter-settings',
             array($this, 'render_settings_page')
@@ -169,7 +169,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * Julat tarikh untuk laporan dashboard (zon masa WordPress).
+     * Date range for the dashboard report (WordPress site timezone).
      *
      * @return array{from:string,to:string}
      */
@@ -248,7 +248,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * Siri unik harian (satu titik = satu hari dalam julat).
+     * Daily unique series (one point per calendar day in range).
      *
      * @return array{labels:string[],datasets:array<int,array>}
      */
@@ -283,7 +283,7 @@ final class Viewer_Counter {
             'labels'   => $labels,
             'datasets' => array(
                 array(
-                    'label'            => __('Pelawat unik harian', 'viewer-counter'),
+                    'label'            => __('Unique visitors (daily)', 'viewer-counter'),
                     'data'             => $data,
                     'borderColor'      => 'rgb(34, 113, 177)',
                     'backgroundColor'  => 'rgba(34, 113, 177, 0.08)',
@@ -297,7 +297,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * Siri unik mengikut minggu ISO (pelawat unik dalam setiap minggu kalendar).
+     * Weekly unique series (distinct visitors per ISO week).
      *
      * @return array{labels:string[],datasets:array<int,array>}
      */
@@ -343,7 +343,7 @@ final class Viewer_Counter {
             'labels'   => $labels,
             'datasets' => array(
                 array(
-                    'label'            => __('Pelawat unik mingguan', 'viewer-counter'),
+                    'label'            => __('Unique visitors (weekly)', 'viewer-counter'),
                     'data'             => $data,
                     'backgroundColor'  => 'rgba(34, 113, 177, 0.55)',
                     'borderColor'      => 'rgb(34, 113, 177)',
@@ -354,7 +354,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * Siri unik mengikut bulan kalendar.
+     * Monthly unique series (calendar months).
      *
      * @return array{labels:string[],datasets:array<int,array>}
      */
@@ -390,7 +390,7 @@ final class Viewer_Counter {
             'labels'   => $labels,
             'datasets' => array(
                 array(
-                    'label'            => __('Pelawat unik bulanan', 'viewer-counter'),
+                    'label'            => __('Unique visitors (monthly)', 'viewer-counter'),
                     'data'             => $data,
                     'backgroundColor'  => 'rgba(0, 128, 96, 0.55)',
                     'borderColor'      => 'rgb(0, 128, 96)',
@@ -401,7 +401,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * Data untuk Chart.js (wp_localize_script).
+     * Chart.js payload (wp_localize_script).
      *
      * @return array{daily:array,weekly:array,monthly:array,from:string,to:string}
      */
@@ -456,19 +456,19 @@ final class Viewer_Counter {
         <div class="wrap">
             <h1><?php esc_html_e('Viewer Counter — Dashboard', 'viewer-counter'); ?></h1>
             <p class="description">
-                <?php esc_html_e('Grafik pelawat unik berdasarkan rekod dalam pangkalan data. Penapis menggunakan zon masa laman (Tetapan → Umum).', 'viewer-counter'); ?>
-                <a href="<?php echo esc_url(admin_url('admin.php?page=viewer-counter-settings')); ?>"><?php esc_html_e('Tetapan paparan shortcode', 'viewer-counter'); ?></a>
+                <?php esc_html_e('Charts are built from stored visit records. Filters use the site timezone (Settings → General).', 'viewer-counter'); ?>
+                <a href="<?php echo esc_url(admin_url('admin.php?page=viewer-counter-settings')); ?>"><?php esc_html_e('Shortcode display settings', 'viewer-counter'); ?></a>
             </p>
 
             <div class="vc-dash-presets">
-                <strong><?php esc_html_e('Cepat:', 'viewer-counter'); ?></strong>
+                <strong><?php esc_html_e('Quick ranges:', 'viewer-counter'); ?></strong>
                 <?php
                 $presets = array(
-                    '7d'    => __('7 hari', 'viewer-counter'),
-                    '30d'   => __('30 hari', 'viewer-counter'),
-                    '90d'   => __('90 hari', 'viewer-counter'),
-                    'month' => __('Bulan ini', 'viewer-counter'),
-                    'year'  => __('Tahun ini', 'viewer-counter'),
+                    '7d'    => __('Last 7 days', 'viewer-counter'),
+                    '30d'   => __('Last 30 days', 'viewer-counter'),
+                    '90d'   => __('Last 90 days', 'viewer-counter'),
+                    'month' => __('This month', 'viewer-counter'),
+                    'year'  => __('This year', 'viewer-counter'),
                 );
                 foreach ($presets as $key => $label) {
                     $url = add_query_arg('vc_preset', $key, $base);
@@ -480,38 +480,38 @@ final class Viewer_Counter {
             <form class="vc-dash-filters" method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>">
                 <input type="hidden" name="page" value="viewer-counter">
                 <div>
-                    <label for="vc_from"><?php esc_html_e('Dari', 'viewer-counter'); ?></label>
+                    <label for="vc_from"><?php esc_html_e('From', 'viewer-counter'); ?></label>
                     <input type="date" id="vc_from" name="vc_from" value="<?php echo esc_attr($range['from']); ?>" required>
                 </div>
                 <div>
-                    <label for="vc_to"><?php esc_html_e('Hingga', 'viewer-counter'); ?></label>
+                    <label for="vc_to"><?php esc_html_e('To', 'viewer-counter'); ?></label>
                     <input type="date" id="vc_to" name="vc_to" value="<?php echo esc_attr($range['to']); ?>" required>
                 </div>
                 <div>
-                    <?php submit_button(__('Tapis', 'viewer-counter'), 'secondary', 'submit', false); ?>
+                    <?php submit_button(__('Apply filter', 'viewer-counter'), 'secondary', 'submit', false); ?>
                 </div>
             </form>
 
             <div class="vc-dash-grid">
                 <div class="vc-dash-card">
-                    <h2><?php esc_html_e('Harian', 'viewer-counter'); ?></h2>
-                    <p class="description"><?php esc_html_e('Bilangan pelawat unik setiap hari.', 'viewer-counter'); ?></p>
+                    <h2><?php esc_html_e('Daily', 'viewer-counter'); ?></h2>
+                    <p class="description"><?php esc_html_e('Unique visitor count for each day.', 'viewer-counter'); ?></p>
                     <div class="vc-chart-wrap">
-                        <canvas id="vc-chart-daily" aria-label="<?php esc_attr_e('Grafik harian', 'viewer-counter'); ?>"></canvas>
+                        <canvas id="vc-chart-daily" aria-label="<?php esc_attr_e('Daily chart', 'viewer-counter'); ?>"></canvas>
                     </div>
                 </div>
                 <div class="vc-dash-card">
-                    <h2><?php esc_html_e('Mingguan', 'viewer-counter'); ?></h2>
-                    <p class="description"><?php esc_html_e('Pelawat unik setiap minggu (Isnin–Ahad, ISO).', 'viewer-counter'); ?></p>
+                    <h2><?php esc_html_e('Weekly', 'viewer-counter'); ?></h2>
+                    <p class="description"><?php esc_html_e('Unique visitors per week (Monday–Sunday, ISO).', 'viewer-counter'); ?></p>
                     <div class="vc-chart-wrap">
-                        <canvas id="vc-chart-weekly" aria-label="<?php esc_attr_e('Grafik mingguan', 'viewer-counter'); ?>"></canvas>
+                        <canvas id="vc-chart-weekly" aria-label="<?php esc_attr_e('Weekly chart', 'viewer-counter'); ?>"></canvas>
                     </div>
                 </div>
                 <div class="vc-dash-card">
-                    <h2><?php esc_html_e('Bulanan', 'viewer-counter'); ?></h2>
-                    <p class="description"><?php esc_html_e('Pelawat unik setiap bulan kalendar dalam julat.', 'viewer-counter'); ?></p>
+                    <h2><?php esc_html_e('Monthly', 'viewer-counter'); ?></h2>
+                    <p class="description"><?php esc_html_e('Unique visitors per calendar month in the selected range.', 'viewer-counter'); ?></p>
                     <div class="vc-chart-wrap">
-                        <canvas id="vc-chart-monthly" aria-label="<?php esc_attr_e('Grafik bulanan', 'viewer-counter'); ?>"></canvas>
+                        <canvas id="vc-chart-monthly" aria-label="<?php esc_attr_e('Monthly chart', 'viewer-counter'); ?>"></canvas>
                     </div>
                 </div>
             </div>
@@ -550,9 +550,9 @@ final class Viewer_Counter {
         <div class="wrap">
             <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
             <p>
-                <a href="<?php echo esc_url(admin_url('admin.php?page=viewer-counter')); ?>">&larr; <?php esc_html_e('Dashboard dan grafik', 'viewer-counter'); ?></a>
+                <a href="<?php echo esc_url(admin_url('admin.php?page=viewer-counter')); ?>">&larr; <?php esc_html_e('Dashboard & charts', 'viewer-counter'); ?></a>
             </p>
-            <p class="description"><?php esc_html_e('Pilih statistik yang dipaparkan secara lalai (shortcode tanpa atribut show, dan widget jika semua kotak tidak ditanda). Dashboard: menu Viewer Counter.', 'viewer-counter'); ?></p>
+            <p class="description"><?php esc_html_e('Choose default statistics for the shortcode (when the show attribute is omitted) and for the widget when no boxes are checked. Open charts from Viewer Counter → Dashboard.', 'viewer-counter'); ?></p>
             <form action="options.php" method="post">
                 <?php settings_fields('viewer_counter'); ?>
                 <table class="form-table" role="presentation">
@@ -562,7 +562,7 @@ final class Viewer_Counter {
                             <td>
                                 <label>
                                     <input name="<?php echo esc_attr(VIEWER_COUNTER_OPTION); ?>[show_<?php echo esc_attr($key); ?>]" type="checkbox" value="1" <?php checked(!empty($settings['show_' . $key])); ?>>
-                                    <?php esc_html_e('Tampilkan', 'viewer-counter'); ?>
+                                    <?php esc_html_e('Show', 'viewer-counter'); ?>
                                 </label>
                             </td>
                         </tr>
@@ -572,10 +572,10 @@ final class Viewer_Counter {
             </form>
             <hr>
             <h2><?php esc_html_e('Shortcode', 'viewer-counter'); ?></h2>
-            <p><code>[viewer_counter]</code> — <?php esc_html_e('ikut tetapan di atas.', 'viewer-counter'); ?></p>
-            <p><code>[viewer_counter show="daily"]</code> — <?php esc_html_e('hanya harian.', 'viewer-counter'); ?></p>
-            <p><code>[viewer_counter show="daily,weekly,total"]</code> — <?php esc_html_e('gabungan suka-suka (menimpa tetapan laman).', 'viewer-counter'); ?></p>
-            <p class="description"><?php esc_html_e('Nilai show: daily, weekly, monthly, total (pisahkan koma).', 'viewer-counter'); ?></p>
+            <p><code>[viewer_counter]</code> — <?php esc_html_e('uses the options above.', 'viewer-counter'); ?></p>
+            <p><code>[viewer_counter show="daily"]</code> — <?php esc_html_e('daily only.', 'viewer-counter'); ?></p>
+            <p><code>[viewer_counter show="daily,weekly,total"]</code> — <?php esc_html_e('custom mix (overrides site defaults).', 'viewer-counter'); ?></p>
+            <p class="description"><?php esc_html_e('show values: daily, weekly, monthly, total (comma-separated).', 'viewer-counter'); ?></p>
         </div>
         <?php
     }
@@ -586,7 +586,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * Elakkan bot mudah daripada menggoncang statistik.
+     * Skip common bots so stats are not skewed.
      */
     private function is_likely_bot() {
         if (is_admin() || (defined('DOING_CRON') && DOING_CRON) || (defined('REST_REQUEST') && REST_REQUEST)) {
@@ -609,7 +609,7 @@ final class Viewer_Counter {
     }
 
     /**
-     * Cap jari ringkas (bukan storan peribadi) untuk pelawat belum ada kuki — elak beberapa ID sebelum kuki tiba.
+     * Lightweight fingerprint (not personal data) for visitors without a cookie yet.
      */
     private function get_request_fingerprint() {
         $ip = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
@@ -693,7 +693,7 @@ final class Viewer_Counter {
         $table = self::table_name();
         $today = current_time('Y-m-d');
 
-        // Satu baris maksimum setiap pelawat setiap hari (unik harian).
+        // At most one row per visitor per calendar day.
         $wpdb->query(
             $wpdb->prepare(
                 "INSERT IGNORE INTO {$table} (visitor_id, visit_date) VALUES (%s, %s)",
@@ -750,10 +750,10 @@ final class Viewer_Counter {
     }
 
     /**
-     * Bina satu baris teks: "Jumlah Pelawat Harian : n Mingguan : m ..."
+     * Build one line of text, e.g. "Visitors Daily : 3 Weekly : 25 …"
      *
-     * @param array $counts Hasil get_counts().
-     * @param array $display_keys Tertib kunci yang dipaparkan.
+     * @param array $counts Result of get_counts().
+     * @param array $display_keys Ordered keys to include.
      */
     public function format_stats_line($counts, $display_keys) {
         $display_keys = array_values(array_intersect(self::display_keys(), (array) $display_keys));
@@ -761,7 +761,7 @@ final class Viewer_Counter {
             return '';
         }
         $labels = self::display_labels();
-        $chunks = array(__('Jumlah Pelawat', 'viewer-counter'));
+        $chunks = array(__('Visitors', 'viewer-counter'));
         foreach ($display_keys as $key) {
             $chunks[] = $labels[$key] . ' : ' . (int) $counts[$key];
         }
@@ -807,7 +807,7 @@ final class Viewer_Counter {
 }
 
 /**
- * Widget paparan ringkas.
+ * Simple widget output.
  */
 class Viewer_Counter_Widget extends WP_Widget {
 
@@ -815,7 +815,7 @@ class Viewer_Counter_Widget extends WP_Widget {
         parent::__construct(
             'viewer_counter_widget',
             __('Viewer Counter', 'viewer-counter'),
-            array('description' => __('Paparkan jumlah pelawat unik.', 'viewer-counter'))
+            array('description' => __('Show unique visitor counts.', 'viewer-counter'))
         );
     }
 
@@ -845,12 +845,12 @@ class Viewer_Counter_Widget extends WP_Widget {
         $labels = Viewer_Counter::display_labels();
         ?>
         <p>
-            <label for="<?php echo esc_attr($this->get_field_id('title')); ?>"><?php esc_html_e('Tajuk:', 'viewer-counter'); ?></label>
+            <label for="<?php echo esc_attr($this->get_field_id('title')); ?>"><?php esc_html_e('Title:', 'viewer-counter'); ?></label>
             <input class="widefat" id="<?php echo esc_attr($this->get_field_id('title')); ?>"
                    name="<?php echo esc_attr($this->get_field_name('title')); ?>" type="text"
                    value="<?php echo esc_attr($title); ?>">
         </p>
-        <p class="description"><?php esc_html_e('Jika semua tidak ditanda, paparan ikut menu Viewer Counter → Tetapan.', 'viewer-counter'); ?></p>
+        <p class="description"><?php esc_html_e('If none are checked, the widget follows Viewer Counter → Settings.', 'viewer-counter'); ?></p>
         <?php foreach (Viewer_Counter::display_keys() as $key) : ?>
             <?php
             $field = 'show_' . $key;
@@ -878,7 +878,7 @@ class Viewer_Counter_Widget extends WP_Widget {
 }
 
 /**
- * Pasang jadual semasa pengaktifan.
+ * Create database table on activation.
  */
 function viewer_counter_activate() {
     global $wpdb;

@@ -1,6 +1,6 @@
 <?php
 /**
- * Buang jadual semasa nyahpasang plugin.
+ * Remove the visits table and plugin options on uninstall.
  */
 
 if (!defined('WP_UNINSTALL_PLUGIN')) {
