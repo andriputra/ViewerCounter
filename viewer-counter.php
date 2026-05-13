@@ -1,10 +1,11 @@
 <?php
 /**
  * Plugin Name: Viewer Counter
- * Plugin URI: https://example.com/viewer-counter
- * Description: Mengira pelawat unik (harian, mingguan, bulanan) dan memaparkan statistik ringkas.
+ * Plugin URI: https://flexbox.my.id/viewer-counter
+ * Description: Menghitung jumlah pengunjung unik (harian, mingguan, bulanan) dan statistik ringkas di halaman.
  * Version: 1.0.0
- * Author: Viewer Counter
+ * Author: Agus Andri Putra
+ * Author URI: https://flexbox.my.id
  * License: GPL v2 or later
  * Text Domain: viewer-counter
  */
