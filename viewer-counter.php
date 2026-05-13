@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Viewer Counter
  * Plugin URI: https://flexbox.my.id/viewer-counter
- * Description: Unique visitors (daily, weekly, monthly, all-time), display settings, shortcode, and admin charts dashboard.
- * Version: 1.2.1
+ * Description: Unique visitors (daily, weekly, monthly, all-time), settings, shortcode, admin charts. Includes rate limiting and strict UUID validation for abuse mitigation.
+ * Version: 1.2.2
  * Author: Agus Andri Putra
  * Author URI: https://flexbox.my.id
  * License: GPL v2 or later
@@ -14,10 +14,12 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('VIEWER_COUNTER_VERSION', '1.2.1');
+define('VIEWER_COUNTER_VERSION', '1.2.2');
 define('VIEWER_COUNTER_OPTION', 'viewer_counter_settings');
 define('VIEWER_COUNTER_COOKIE', 'wp_vc_vid');
 define('VIEWER_COUNTER_COOKIE_DAYS', 400);
+/** Max User-Agent length accepted for counting (mitigation against oversized header abuse). */
+define('VIEWER_COUNTER_MAX_UA_LENGTH', 512);
 
 final class Viewer_Counter {
 
@@ -576,6 +578,7 @@ final class Viewer_Counter {
             <p><code>[viewer_counter show="daily"]</code> — <?php esc_html_e('daily only.', 'viewer-counter'); ?></p>
             <p><code>[viewer_counter show="daily,weekly,total"]</code> — <?php esc_html_e('custom mix (overrides site defaults).', 'viewer-counter'); ?></p>
             <p class="description"><?php esc_html_e('show values: daily, weekly, monthly, total (comma-separated).', 'viewer-counter'); ?></p>
+            <p class="description"><?php esc_html_e('Security: visit recording uses prepared SQL, strict visitor UUID validation, shortcode attribute sanitization, oversized User-Agent rejection, and a per-IP hourly rate limit (adjustable via filters).', 'viewer-counter'); ?></p>
         </div>
         <?php
     }
@@ -583,6 +586,83 @@ final class Viewer_Counter {
     public static function table_name() {
         global $wpdb;
         return $wpdb->prefix . 'viewer_counter_visits';
+    }
+
+    /**
+     * Strict visitor UUID (cookie / transient value) — rejects forged or malformed IDs before DB or Set-Cookie.
+     *
+     * @param string $id Lowercase canonical form.
+     */
+    private function is_valid_visitor_uuid($id) {
+        if (!is_string($id) || $id === '') {
+            return false;
+        }
+        $id = strtolower($id);
+        if (function_exists('wp_is_uuid') && wp_is_uuid($id)) {
+            return true;
+        }
+        return (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', $id);
+    }
+
+    /**
+     * Rolling per-IP cap on visit recording to mitigate DB spam / fake visitor floods.
+     *
+     * @return bool True when over limit (caller should skip INSERT).
+     */
+    private function is_visit_record_rate_limited() {
+        if (apply_filters('viewer_counter_skip_rate_limit', false)) {
+            return false;
+        }
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+        if ($ip === '') {
+            return true;
+        }
+        if (function_exists('wp_privacy_anonymize_ip')) {
+            $ip = wp_privacy_anonymize_ip($ip);
+        }
+        $key = 'vc_iprl_' . md5($ip . '|viewer_counter_v1');
+        $state = get_transient($key);
+        if (!is_array($state) || empty($state['reset']) || time() > (int) $state['reset']) {
+            $state = array(
+                'reset' => time() + HOUR_IN_SECONDS,
+                'count' => 0,
+            );
+        }
+        $max = (int) apply_filters('viewer_counter_max_visits_per_ip_per_hour', 360);
+        if ($max < 60) {
+            $max = 60;
+        }
+        if ((int) $state['count'] >= $max) {
+            set_transient($key, $state, max(1, (int) $state['reset'] - time()));
+            return true;
+        }
+        $state['count'] = (int) $state['count'] + 1;
+        set_transient($key, $state, max(60, (int) $state['reset'] - time()));
+        return false;
+    }
+
+    /**
+     * Sanitize shortcode "class" attribute (alphanumeric, hyphen, underscore, spaces only).
+     *
+     * @param string $class Raw attribute.
+     * @return string Safe class string.
+     */
+    private function sanitize_viewer_counter_class_attr($class) {
+        $class = is_string($class) ? wp_strip_all_tags($class) : '';
+        $class = preg_replace('/[^A-Za-z0-9_\- ]/', '', $class);
+        $class = preg_replace('/\s+/', ' ', trim($class));
+        if ($class === '') {
+            return 'viewer-counter';
+        }
+        $parts = preg_split('/\s+/', $class, -1, PREG_SPLIT_NO_EMPTY);
+        $out = array();
+        foreach ($parts as $p) {
+            $s = sanitize_html_class($p);
+            if ($s !== '') {
+                $out[] = $s;
+            }
+        }
+        return $out ? implode(' ', $out) : 'viewer-counter';
     }
 
     /**
@@ -598,7 +678,12 @@ final class Viewer_Counter {
         if (!isset($_SERVER['HTTP_USER_AGENT']) || $_SERVER['HTTP_USER_AGENT'] === '') {
             return true;
         }
-        $ua = strtolower($_SERVER['HTTP_USER_AGENT']);
+        $ua_raw = (string) $_SERVER['HTTP_USER_AGENT'];
+        $max_ua = (int) apply_filters('viewer_counter_max_user_agent_length', VIEWER_COUNTER_MAX_UA_LENGTH);
+        if ($max_ua > 0 && strlen($ua_raw) > $max_ua) {
+            return true;
+        }
+        $ua = strtolower($ua_raw);
         $bots = array('bot', 'crawl', 'spider', 'slurp', 'mediapartners', 'facebookexternalhit', 'embedly', 'preview', 'lighthouse', 'pingdom', 'uptime');
         foreach ($bots as $b) {
             if (strpos($ua, $b) !== false) {
@@ -617,6 +702,10 @@ final class Viewer_Counter {
             $ip = wp_privacy_anonymize_ip($ip);
         }
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? (string) $_SERVER['HTTP_USER_AGENT'] : '';
+        $max_ua = (int) apply_filters('viewer_counter_max_user_agent_length', VIEWER_COUNTER_MAX_UA_LENGTH);
+        if ($max_ua > 0 && strlen($ua) > $max_ua) {
+            $ua = substr($ua, 0, $max_ua);
+        }
         return substr(md5($ip . "\n" . $ua), 0, 32);
     }
 
@@ -640,7 +729,7 @@ final class Viewer_Counter {
     private function get_or_create_visitor_id() {
         if (isset($_COOKIE[VIEWER_COUNTER_COOKIE]) && is_string($_COOKIE[VIEWER_COUNTER_COOKIE])) {
             $id = preg_replace('/[^a-f0-9\-]/', '', strtolower($_COOKIE[VIEWER_COUNTER_COOKIE]));
-            if (strlen($id) === 36) {
+            if ($this->is_valid_visitor_uuid($id)) {
                 return $id;
             }
         }
@@ -648,7 +737,7 @@ final class Viewer_Counter {
         $cached = get_transient($tkey);
         if (is_string($cached)) {
             $cached = preg_replace('/[^a-f0-9\-]/', '', strtolower($cached));
-            if (strlen($cached) === 36) {
+            if ($this->is_valid_visitor_uuid($cached)) {
                 return $cached;
             }
         }
@@ -658,6 +747,9 @@ final class Viewer_Counter {
     }
 
     private function set_visitor_cookie($visitor_id) {
+        if (!$this->is_valid_visitor_uuid((string) $visitor_id)) {
+            return;
+        }
         if (headers_sent()) {
             return;
         }
@@ -687,7 +779,15 @@ final class Viewer_Counter {
         }
 
         $visitor_id = $this->get_or_create_visitor_id();
+        if (!$this->is_valid_visitor_uuid($visitor_id)) {
+            return;
+        }
+
         $this->set_visitor_cookie($visitor_id);
+
+        if ($this->is_visit_record_rate_limited()) {
+            return;
+        }
 
         global $wpdb;
         $table = self::table_name();
@@ -742,7 +842,7 @@ final class Viewer_Counter {
             );
         }
         if (in_array('total', $want, true)) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name from trusted prefix.
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name from $wpdb->prefix only.
             $result['total'] = (int) $wpdb->get_var("SELECT COUNT(DISTINCT visitor_id) FROM {$table}");
         }
 
@@ -787,16 +887,17 @@ final class Viewer_Counter {
             'viewer_counter'
         );
         wp_enqueue_style('viewer-counter');
-        $show_param = trim((string) $atts['show']);
+        $show_param = strtolower(preg_replace('/[^a-z,]/', '', sanitize_text_field(trim((string) $atts['show']))));
         $display_keys = $this->resolve_display_keys($show_param !== '' ? $show_param : null, null);
         $counts = $this->get_counts($display_keys);
         $text = $this->format_stats_line($counts, $display_keys);
         if ($text === '') {
             return '';
         }
+        $class = $this->sanitize_viewer_counter_class_attr((string) $atts['class']);
         return sprintf(
             '<span class="%s">%s</span>',
-            esc_attr($atts['class']),
+            esc_attr($class),
             esc_html($text)
         );
     }
