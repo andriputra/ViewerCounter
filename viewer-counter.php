@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Viewer Counter
  * Plugin URI: https://flexbox.my.id/viewer-counter
- * Description: Menghitung jumlah pengunjung unik (harian, mingguan, bulanan) dan statistik ringkas di halaman.
- * Version: 1.0.0
+ * Description: Pelawat unik (harian, mingguan, bulanan, keseluruhan), tetapan paparan, shortcode, dan dashboard admin bergrafik.
+ * Version: 1.2.0
  * Author: Agus Andri Putra
  * Author URI: https://flexbox.my.id
  * License: GPL v2 or later
@@ -14,7 +14,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('VIEWER_COUNTER_VERSION', '1.0.0');
+define('VIEWER_COUNTER_VERSION', '1.2.0');
+define('VIEWER_COUNTER_OPTION', 'viewer_counter_settings');
 define('VIEWER_COUNTER_COOKIE', 'wp_vc_vid');
 define('VIEWER_COUNTER_COOKIE_DAYS', 400);
 
@@ -31,9 +32,552 @@ final class Viewer_Counter {
 
     private function __construct() {
         add_action('init', array($this, 'maybe_record_visit'), 5);
+        add_action('admin_menu', array($this, 'register_admin_menus'));
+        add_action('admin_init', array($this, 'register_settings'));
+        add_action('admin_init', array($this, 'maybe_redirect_legacy_options_page'), 1);
+        add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_dashboard'));
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
         add_shortcode('viewer_counter', array($this, 'shortcode'));
         add_action('widgets_init', array($this, 'register_widget'));
+    }
+
+    /**
+     * URL lama Tetapan → Viewer Counter (options-general.php?page=viewer-counter).
+     */
+    public function maybe_redirect_legacy_options_page() {
+        if (!is_admin() || !current_user_can('manage_options')) {
+            return;
+        }
+        if (empty($GLOBALS['pagenow']) || $GLOBALS['pagenow'] !== 'options-general.php') {
+            return;
+        }
+        if (isset($_GET['page']) && sanitize_key(wp_unslash($_GET['page'])) === 'viewer-counter') {
+            wp_safe_redirect(admin_url('admin.php?page=viewer-counter-settings'));
+            exit;
+        }
+    }
+
+    /**
+     * Kunci paparan yang sah (tertib paparan).
+     */
+    public static function display_keys() {
+        return array('daily', 'weekly', 'monthly', 'total');
+    }
+
+    /**
+     * Label ringkas untuk setiap kunci (Bahasa Indonesia).
+     */
+    public static function display_labels() {
+        return array(
+            'daily'   => __('Harian', 'viewer-counter'),
+            'weekly'  => __('Mingguan', 'viewer-counter'),
+            'monthly' => __('Bulanan', 'viewer-counter'),
+            'total'   => __('Keseluruhan', 'viewer-counter'),
+        );
+    }
+
+    public static function default_settings() {
+        return array(
+            'show_daily'   => 1,
+            'show_weekly'  => 1,
+            'show_monthly' => 1,
+            'show_total'   => 0,
+        );
+    }
+
+    public function get_settings() {
+        $defaults = self::default_settings();
+        $saved = get_option(VIEWER_COUNTER_OPTION, array());
+        if (!is_array($saved)) {
+            $saved = array();
+        }
+        return array_merge($defaults, $saved);
+    }
+
+    /**
+     * Ubah tetapan / shortcode menjadi senarai kunci paparan mengikut tertib.
+     *
+     * @param string|null $show_attr Atribut shortcode `show`, contoh: "daily,total". Null = guna tetapan laman.
+     * @param array|null  $widget_flags Kunci show_* dari instance widget; null = abaikan.
+     */
+    public function resolve_display_keys($show_attr = null, $widget_flags = null) {
+        $keys = array();
+        if ($widget_flags !== null && is_array($widget_flags)) {
+            foreach (self::display_keys() as $k) {
+                $f = 'show_' . $k;
+                if (!empty($widget_flags[$f])) {
+                    $keys[] = $k;
+                }
+            }
+            if ($keys !== array()) {
+                return $keys;
+            }
+        }
+        if (is_string($show_attr) && $show_attr !== '') {
+            $parts = preg_split('/\s*,\s*/', strtolower(trim($show_attr)));
+            $allowed = array_flip(self::display_keys());
+            $parsed = array();
+            foreach ($parts as $p) {
+                if (isset($allowed[$p])) {
+                    $parsed[] = $p;
+                }
+            }
+            $parsed = array_values(array_unique($parsed));
+            if ($parsed !== array()) {
+                return $parsed;
+            }
+        }
+        $settings = $this->get_settings();
+        $keys = array();
+        foreach (self::display_keys() as $k) {
+            if (!empty($settings['show_' . $k])) {
+                $keys[] = $k;
+            }
+        }
+        if ($keys === array()) {
+            return array('daily', 'weekly', 'monthly');
+        }
+        return $keys;
+    }
+
+    public function register_admin_menus() {
+        add_menu_page(
+            __('Viewer Counter', 'viewer-counter'),
+            __('Viewer Counter', 'viewer-counter'),
+            'manage_options',
+            'viewer-counter',
+            array($this, 'render_dashboard_page'),
+            'dashicons-chart-area',
+            68
+        );
+        add_submenu_page(
+            'viewer-counter',
+            __('Dashboard', 'viewer-counter'),
+            __('Dashboard', 'viewer-counter'),
+            'manage_options',
+            'viewer-counter',
+            array($this, 'render_dashboard_page')
+        );
+        add_submenu_page(
+            'viewer-counter',
+            __('Tetapan', 'viewer-counter'),
+            __('Tetapan', 'viewer-counter'),
+            'manage_options',
+            'viewer-counter-settings',
+            array($this, 'render_settings_page')
+        );
+    }
+
+    /**
+     * Julat tarikh untuk laporan dashboard (zon masa WordPress).
+     *
+     * @return array{from:string,to:string}
+     */
+    public function parse_dashboard_date_range() {
+        $tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(wp_timezone_string());
+        $today = current_time('Y-m-d');
+        $today_dt = new DateTimeImmutable($today, $tz);
+
+        if (!empty($_GET['vc_preset'])) {
+            $preset = sanitize_key(wp_unslash($_GET['vc_preset']));
+            switch ($preset) {
+                case '7d':
+                    return array(
+                        'from' => $today_dt->modify('-6 days')->format('Y-m-d'),
+                        'to'   => $today,
+                    );
+                case '30d':
+                    return array(
+                        'from' => $today_dt->modify('-29 days')->format('Y-m-d'),
+                        'to'   => $today,
+                    );
+                case '90d':
+                    return array(
+                        'from' => $today_dt->modify('-89 days')->format('Y-m-d'),
+                        'to'   => $today,
+                    );
+                case 'month':
+                    return array(
+                        'from' => $today_dt->modify('first day of this month')->format('Y-m-d'),
+                        'to'   => $today,
+                    );
+                case 'year':
+                    return array(
+                        'from' => $today_dt->modify('first day of january this year')->format('Y-m-d'),
+                        'to'   => $today,
+                    );
+            }
+        }
+
+        $from_in = isset($_GET['vc_from']) ? sanitize_text_field(wp_unslash($_GET['vc_from'])) : '';
+        $to_in = isset($_GET['vc_to']) ? sanitize_text_field(wp_unslash($_GET['vc_to'])) : '';
+        $def_from = $today_dt->modify('-29 days')->format('Y-m-d');
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from_in)) {
+            $from_in = $def_from;
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $to_in)) {
+            $to_in = $today;
+        }
+
+        try {
+            $from = (new DateTimeImmutable($from_in, $tz))->format('Y-m-d');
+            $to = (new DateTimeImmutable($to_in, $tz))->format('Y-m-d');
+        } catch (Exception $e) {
+            return array('from' => $def_from, 'to' => $today);
+        }
+
+        if ($from > $to) {
+            $swap = $from;
+            $from = $to;
+            $to = $swap;
+        }
+
+        $max_days = (int) apply_filters('viewer_counter_max_report_days', 366);
+        $from_dt = new DateTimeImmutable($from, $tz);
+        $to_dt = new DateTimeImmutable($to, $tz);
+        $span = (int) floor(($to_dt->getTimestamp() - $from_dt->getTimestamp()) / DAY_IN_SECONDS) + 1;
+        if ($span < 1) {
+            $span = 1;
+        }
+        if ($span > $max_days) {
+            $from = (clone $to_dt)->modify('-' . ($max_days - 1) . ' days')->format('Y-m-d');
+        }
+
+        return array('from' => $from, 'to' => $to);
+    }
+
+    /**
+     * Siri unik harian (satu titik = satu hari dalam julat).
+     *
+     * @return array{labels:string[],datasets:array<int,array>}
+     */
+    public function get_series_daily($from, $to) {
+        global $wpdb;
+        $table = self::table_name();
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $sql = $wpdb->prepare(
+            "SELECT visit_date, COUNT(*) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY visit_date ORDER BY visit_date ASC",
+            $from,
+            $to
+        );
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        $map = array();
+        foreach ($rows as $r) {
+            $map[$r['visit_date']] = (int) $r['c'];
+        }
+
+        $tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(wp_timezone_string());
+        $cur = new DateTimeImmutable($from, $tz);
+        $end = new DateTimeImmutable($to, $tz);
+        $labels = array();
+        $data = array();
+        while ($cur <= $end) {
+            $d = $cur->format('Y-m-d');
+            $labels[] = date_i18n('j M', $cur->getTimestamp());
+            $data[] = isset($map[$d]) ? $map[$d] : 0;
+            $cur = $cur->modify('+1 day');
+        }
+
+        return array(
+            'labels'   => $labels,
+            'datasets' => array(
+                array(
+                    'label'            => __('Pelawat unik harian', 'viewer-counter'),
+                    'data'             => $data,
+                    'borderColor'      => 'rgb(34, 113, 177)',
+                    'backgroundColor'  => 'rgba(34, 113, 177, 0.08)',
+                    'tension'          => 0.25,
+                    'fill'             => true,
+                    'pointRadius'      => 2,
+                    'pointHitRadius'   => 8,
+                ),
+            ),
+        );
+    }
+
+    /**
+     * Siri unik mengikut minggu ISO (pelawat unik dalam setiap minggu kalendar).
+     *
+     * @return array{labels:string[],datasets:array<int,array>}
+     */
+    public function get_series_weekly($from, $to) {
+        global $wpdb;
+        $table = self::table_name();
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $sql = $wpdb->prepare(
+            "SELECT YEARWEEK(visit_date, 3) AS yw, COUNT(DISTINCT visitor_id) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY yw ORDER BY yw ASC",
+            $from,
+            $to
+        );
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        $map = array();
+        foreach ($rows as $r) {
+            $map[(int) $r['yw']] = (int) $r['c'];
+        }
+
+        $tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(wp_timezone_string());
+        $from_dt = new DateTimeImmutable($from, $tz);
+        $to_dt = new DateTimeImmutable($to, $tz);
+        $n = (int) $from_dt->format('N');
+        $week_cursor = $from_dt->modify('-' . ($n - 1) . ' days');
+
+        $labels = array();
+        $data = array();
+        while ($week_cursor <= $to_dt) {
+            $y = (int) $week_cursor->format('o');
+            $w = (int) $week_cursor->format('W');
+            $key = $y * 100 + $w;
+            $week_end = $week_cursor->modify('+6 days');
+            $labels[] = sprintf(
+                /* translators: 1: start date, 2: end date */
+                __('%1$s – %2$s', 'viewer-counter'),
+                date_i18n('j M', $week_cursor->getTimestamp()),
+                date_i18n('j M Y', $week_end->getTimestamp())
+            );
+            $data[] = isset($map[$key]) ? $map[$key] : 0;
+            $week_cursor = $week_cursor->modify('+7 days');
+        }
+
+        return array(
+            'labels'   => $labels,
+            'datasets' => array(
+                array(
+                    'label'            => __('Pelawat unik mingguan', 'viewer-counter'),
+                    'data'             => $data,
+                    'backgroundColor'  => 'rgba(34, 113, 177, 0.55)',
+                    'borderColor'      => 'rgb(34, 113, 177)',
+                    'borderWidth'      => 1,
+                ),
+            ),
+        );
+    }
+
+    /**
+     * Siri unik mengikut bulan kalendar.
+     *
+     * @return array{labels:string[],datasets:array<int,array>}
+     */
+    public function get_series_monthly($from, $to) {
+        global $wpdb;
+        $table = self::table_name();
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $sql = $wpdb->prepare(
+            "SELECT DATE_FORMAT(visit_date, '%%Y-%%m') AS ym, COUNT(DISTINCT visitor_id) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY ym ORDER BY ym ASC",
+            $from,
+            $to
+        );
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+        $map = array();
+        foreach ($rows as $r) {
+            $map[$r['ym']] = (int) $r['c'];
+        }
+
+        $tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(wp_timezone_string());
+        $month_cursor = new DateTimeImmutable(substr($from, 0, 7) . '-01', $tz);
+        $end_month = new DateTimeImmutable(substr($to, 0, 7) . '-01', $tz);
+
+        $labels = array();
+        $data = array();
+        while ($month_cursor <= $end_month) {
+            $ym = $month_cursor->format('Y-m');
+            $labels[] = date_i18n('M Y', $month_cursor->getTimestamp());
+            $data[] = isset($map[$ym]) ? $map[$ym] : 0;
+            $month_cursor = $month_cursor->modify('first day of next month');
+        }
+
+        return array(
+            'labels'   => $labels,
+            'datasets' => array(
+                array(
+                    'label'            => __('Pelawat unik bulanan', 'viewer-counter'),
+                    'data'             => $data,
+                    'backgroundColor'  => 'rgba(0, 128, 96, 0.55)',
+                    'borderColor'      => 'rgb(0, 128, 96)',
+                    'borderWidth'      => 1,
+                ),
+            ),
+        );
+    }
+
+    /**
+     * Data untuk Chart.js (wp_localize_script).
+     *
+     * @return array{daily:array,weekly:array,monthly:array,from:string,to:string}
+     */
+    public function get_dashboard_chart_payload() {
+        $range = $this->parse_dashboard_date_range();
+        $from = $range['from'];
+        $to = $range['to'];
+        return array(
+            'daily'   => $this->get_series_daily($from, $to),
+            'weekly'  => $this->get_series_weekly($from, $to),
+            'monthly' => $this->get_series_monthly($from, $to),
+            'from'    => $from,
+            'to'      => $to,
+        );
+    }
+
+    public function enqueue_admin_dashboard($hook) {
+        if ($hook !== 'toplevel_page_viewer-counter') {
+            return;
+        }
+        $payload = $this->get_dashboard_chart_payload();
+        wp_enqueue_script(
+            'viewer-counter-chartjs',
+            'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
+            array(),
+            '4.4.1',
+            true
+        );
+        wp_enqueue_script(
+            'viewer-counter-admin-dash',
+            plugins_url('assets/admin-dashboard.js', __FILE__),
+            array('viewer-counter-chartjs'),
+            VIEWER_COUNTER_VERSION,
+            true
+        );
+        wp_localize_script('viewer-counter-admin-dash', 'viewerCounterDash', $payload);
+        wp_enqueue_style(
+            'viewer-counter-admin-dash',
+            plugins_url('assets/admin-dashboard.css', __FILE__),
+            array(),
+            VIEWER_COUNTER_VERSION
+        );
+    }
+
+    public function render_dashboard_page() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        $range = $this->parse_dashboard_date_range();
+        $base = admin_url('admin.php?page=viewer-counter');
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e('Viewer Counter — Dashboard', 'viewer-counter'); ?></h1>
+            <p class="description">
+                <?php esc_html_e('Grafik pelawat unik berdasarkan rekod dalam pangkalan data. Penapis menggunakan zon masa laman (Tetapan → Umum).', 'viewer-counter'); ?>
+                <a href="<?php echo esc_url(admin_url('admin.php?page=viewer-counter-settings')); ?>"><?php esc_html_e('Tetapan paparan shortcode', 'viewer-counter'); ?></a>
+            </p>
+
+            <div class="vc-dash-presets">
+                <strong><?php esc_html_e('Cepat:', 'viewer-counter'); ?></strong>
+                <?php
+                $presets = array(
+                    '7d'    => __('7 hari', 'viewer-counter'),
+                    '30d'   => __('30 hari', 'viewer-counter'),
+                    '90d'   => __('90 hari', 'viewer-counter'),
+                    'month' => __('Bulan ini', 'viewer-counter'),
+                    'year'  => __('Tahun ini', 'viewer-counter'),
+                );
+                foreach ($presets as $key => $label) {
+                    $url = add_query_arg('vc_preset', $key, $base);
+                    echo '<a href="' . esc_url($url) . '">' . esc_html($label) . '</a> ';
+                }
+                ?>
+            </div>
+
+            <form class="vc-dash-filters" method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>">
+                <input type="hidden" name="page" value="viewer-counter">
+                <div>
+                    <label for="vc_from"><?php esc_html_e('Dari', 'viewer-counter'); ?></label>
+                    <input type="date" id="vc_from" name="vc_from" value="<?php echo esc_attr($range['from']); ?>" required>
+                </div>
+                <div>
+                    <label for="vc_to"><?php esc_html_e('Hingga', 'viewer-counter'); ?></label>
+                    <input type="date" id="vc_to" name="vc_to" value="<?php echo esc_attr($range['to']); ?>" required>
+                </div>
+                <div>
+                    <?php submit_button(__('Tapis', 'viewer-counter'), 'secondary', 'submit', false); ?>
+                </div>
+            </form>
+
+            <div class="vc-dash-grid">
+                <div class="vc-dash-card">
+                    <h2><?php esc_html_e('Harian', 'viewer-counter'); ?></h2>
+                    <p class="description"><?php esc_html_e('Bilangan pelawat unik setiap hari.', 'viewer-counter'); ?></p>
+                    <div class="vc-chart-wrap">
+                        <canvas id="vc-chart-daily" aria-label="<?php esc_attr_e('Grafik harian', 'viewer-counter'); ?>"></canvas>
+                    </div>
+                </div>
+                <div class="vc-dash-card">
+                    <h2><?php esc_html_e('Mingguan', 'viewer-counter'); ?></h2>
+                    <p class="description"><?php esc_html_e('Pelawat unik setiap minggu (Isnin–Ahad, ISO).', 'viewer-counter'); ?></p>
+                    <div class="vc-chart-wrap">
+                        <canvas id="vc-chart-weekly" aria-label="<?php esc_attr_e('Grafik mingguan', 'viewer-counter'); ?>"></canvas>
+                    </div>
+                </div>
+                <div class="vc-dash-card">
+                    <h2><?php esc_html_e('Bulanan', 'viewer-counter'); ?></h2>
+                    <p class="description"><?php esc_html_e('Pelawat unik setiap bulan kalendar dalam julat.', 'viewer-counter'); ?></p>
+                    <div class="vc-chart-wrap">
+                        <canvas id="vc-chart-monthly" aria-label="<?php esc_attr_e('Grafik bulanan', 'viewer-counter'); ?>"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php
+    }
+
+    public function register_settings() {
+        register_setting(
+            'viewer_counter',
+            VIEWER_COUNTER_OPTION,
+            array(
+                'type'              => 'array',
+                'sanitize_callback' => array($this, 'sanitize_settings'),
+                'default'           => self::default_settings(),
+            )
+        );
+    }
+
+    public function sanitize_settings($input) {
+        $input = is_array($input) ? $input : array();
+        $out = array();
+        foreach (self::display_keys() as $k) {
+            $out['show_' . $k] = (!empty($input['show_' . $k]) && (int) $input['show_' . $k] === 1) ? 1 : 0;
+        }
+        return $out;
+    }
+
+    public function render_settings_page() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        $labels = self::display_labels();
+        $settings = $this->get_settings();
+        ?>
+        <div class="wrap">
+            <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
+            <p>
+                <a href="<?php echo esc_url(admin_url('admin.php?page=viewer-counter')); ?>">&larr; <?php esc_html_e('Dashboard dan grafik', 'viewer-counter'); ?></a>
+            </p>
+            <p class="description"><?php esc_html_e('Pilih statistik yang dipaparkan secara lalai (shortcode tanpa atribut show, dan widget jika semua kotak tidak ditanda). Dashboard: menu Viewer Counter.', 'viewer-counter'); ?></p>
+            <form action="options.php" method="post">
+                <?php settings_fields('viewer_counter'); ?>
+                <table class="form-table" role="presentation">
+                    <?php foreach (self::display_keys() as $key) : ?>
+                        <tr>
+                            <th scope="row"><?php echo esc_html($labels[$key]); ?></th>
+                            <td>
+                                <label>
+                                    <input name="<?php echo esc_attr(VIEWER_COUNTER_OPTION); ?>[show_<?php echo esc_attr($key); ?>]" type="checkbox" value="1" <?php checked(!empty($settings['show_' . $key])); ?>>
+                                    <?php esc_html_e('Tampilkan', 'viewer-counter'); ?>
+                                </label>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </table>
+                <?php submit_button(); ?>
+            </form>
+            <hr>
+            <h2><?php esc_html_e('Shortcode', 'viewer-counter'); ?></h2>
+            <p><code>[viewer_counter]</code> — <?php esc_html_e('ikut tetapan di atas.', 'viewer-counter'); ?></p>
+            <p><code>[viewer_counter show="daily"]</code> — <?php esc_html_e('hanya harian.', 'viewer-counter'); ?></p>
+            <p><code>[viewer_counter show="daily,weekly,total"]</code> — <?php esc_html_e('gabungan suka-suka (menimpa tetapan laman).', 'viewer-counter'); ?></p>
+            <p class="description"><?php esc_html_e('Nilai show: daily, weekly, monthly, total (pisahkan koma).', 'viewer-counter'); ?></p>
+        </div>
+        <?php
     }
 
     public static function table_name() {
@@ -159,40 +703,69 @@ final class Viewer_Counter {
         );
     }
 
-    public function get_counts() {
+    public function get_counts($keys = null) {
         global $wpdb;
         $table = self::table_name();
+        $all_keys = array('daily', 'weekly', 'monthly', 'total');
+        $want = $keys === null ? $all_keys : array_values(array_intersect($all_keys, (array) $keys));
+        $result = array_fill_keys($all_keys, 0);
+        if ($want === array()) {
+            return $result;
+        }
+
         $today = current_time('Y-m-d');
         $tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(wp_timezone_string());
         $week_start = (new DateTimeImmutable($today, $tz))->modify('-6 days')->format('Y-m-d');
-
         $month_start = current_time('Y-m-01');
 
-        $daily = (int) $wpdb->get_var(
-            $wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE visit_date = %s", $today)
-        );
+        if (in_array('daily', $want, true)) {
+            $result['daily'] = (int) $wpdb->get_var(
+                $wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE visit_date = %s", $today)
+            );
+        }
+        if (in_array('weekly', $want, true)) {
+            $result['weekly'] = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(DISTINCT visitor_id) FROM {$table} WHERE visit_date >= %s AND visit_date <= %s",
+                    $week_start,
+                    $today
+                )
+            );
+        }
+        if (in_array('monthly', $want, true)) {
+            $result['monthly'] = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(DISTINCT visitor_id) FROM {$table} WHERE visit_date >= %s AND visit_date <= %s",
+                    $month_start,
+                    $today
+                )
+            );
+        }
+        if (in_array('total', $want, true)) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name from trusted prefix.
+            $result['total'] = (int) $wpdb->get_var("SELECT COUNT(DISTINCT visitor_id) FROM {$table}");
+        }
 
-        $weekly = (int) $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT COUNT(DISTINCT visitor_id) FROM {$table} WHERE visit_date >= %s AND visit_date <= %s",
-                $week_start,
-                $today
-            )
-        );
+        return $result;
+    }
 
-        $monthly = (int) $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT COUNT(DISTINCT visitor_id) FROM {$table} WHERE visit_date >= %s AND visit_date <= %s",
-                $month_start,
-                $today
-            )
-        );
-
-        return array(
-            'daily'   => $daily,
-            'weekly'  => $weekly,
-            'monthly' => $monthly,
-        );
+    /**
+     * Bina satu baris teks: "Jumlah Pelawat Harian : n Mingguan : m ..."
+     *
+     * @param array $counts Hasil get_counts().
+     * @param array $display_keys Tertib kunci yang dipaparkan.
+     */
+    public function format_stats_line($counts, $display_keys) {
+        $display_keys = array_values(array_intersect(self::display_keys(), (array) $display_keys));
+        if ($display_keys === array()) {
+            return '';
+        }
+        $labels = self::display_labels();
+        $chunks = array(__('Jumlah Pelawat', 'viewer-counter'));
+        foreach ($display_keys as $key) {
+            $chunks[] = $labels[$key] . ' : ' . (int) $counts[$key];
+        }
+        return implode(' ', $chunks);
     }
 
     public function enqueue_assets() {
@@ -208,24 +781,24 @@ final class Viewer_Counter {
         $atts = shortcode_atts(
             array(
                 'class' => 'viewer-counter',
+                'show'  => '',
             ),
             $atts,
             'viewer_counter'
         );
         wp_enqueue_style('viewer-counter');
-        $c = $this->get_counts();
-        $html = sprintf(
+        $show_param = trim((string) $atts['show']);
+        $display_keys = $this->resolve_display_keys($show_param !== '' ? $show_param : null, null);
+        $counts = $this->get_counts($display_keys);
+        $text = $this->format_stats_line($counts, $display_keys);
+        if ($text === '') {
+            return '';
+        }
+        return sprintf(
             '<span class="%s">%s</span>',
             esc_attr($atts['class']),
-            sprintf(
-                /* translators: 1: daily count, 2: weekly count, 3: monthly count */
-                esc_html__('Jumlah Pelawat Harian : %1$d Mingguan : %2$d Bulanan : %3$d', 'viewer-counter'),
-                $c['daily'],
-                $c['weekly'],
-                $c['monthly']
-            )
+            esc_html($text)
         );
-        return $html;
     }
 
     public function register_widget() {
@@ -252,20 +825,24 @@ class Viewer_Counter_Widget extends WP_Widget {
             echo $args['before_title'] . apply_filters('widget_title', $instance['title']) . $args['after_title'];
         }
         wp_enqueue_style('viewer-counter');
-        $c = Viewer_Counter::instance()->get_counts();
-        echo '<p class="viewer-counter">';
-        printf(
-            esc_html__('Jumlah Pelawat Harian : %1$d Mingguan : %2$d Bulanan : %3$d', 'viewer-counter'),
-            (int) $c['daily'],
-            (int) $c['weekly'],
-            (int) $c['monthly']
-        );
-        echo '</p>';
+        $flags = array();
+        foreach (Viewer_Counter::display_keys() as $k) {
+            $flags['show_' . $k] = !empty($instance['show_' . $k]);
+        }
+        $vc = Viewer_Counter::instance();
+        $display_keys = $vc->resolve_display_keys(null, $flags);
+        $counts = $vc->get_counts($display_keys);
+        $text = $vc->format_stats_line($counts, $display_keys);
+        if ($text !== '') {
+            echo '<p class="viewer-counter">' . esc_html($text) . '</p>';
+        }
         echo $args['after_widget'];
     }
 
     public function form($instance) {
         $title = isset($instance['title']) ? $instance['title'] : '';
+        $settings = Viewer_Counter::instance()->get_settings();
+        $labels = Viewer_Counter::display_labels();
         ?>
         <p>
             <label for="<?php echo esc_attr($this->get_field_id('title')); ?>"><?php esc_html_e('Tajuk:', 'viewer-counter'); ?></label>
@@ -273,12 +850,29 @@ class Viewer_Counter_Widget extends WP_Widget {
                    name="<?php echo esc_attr($this->get_field_name('title')); ?>" type="text"
                    value="<?php echo esc_attr($title); ?>">
         </p>
+        <p class="description"><?php esc_html_e('Jika semua tidak ditanda, paparan ikut menu Viewer Counter → Tetapan.', 'viewer-counter'); ?></p>
+        <?php foreach (Viewer_Counter::display_keys() as $key) : ?>
+            <?php
+            $field = 'show_' . $key;
+            $val = array_key_exists($field, $instance) ? (int) $instance[$field] : (int) $settings[$field];
+            ?>
+            <p>
+                <label>
+                    <input type="checkbox" id="<?php echo esc_attr($this->get_field_id($field)); ?>"
+                           name="<?php echo esc_attr($this->get_field_name($field)); ?>" value="1" <?php checked($val, 1); ?>>
+                    <?php echo esc_html($labels[$key]); ?>
+                </label>
+            </p>
+        <?php endforeach; ?>
         <?php
     }
 
     public function update($new_instance, $old_instance) {
         $instance = array();
         $instance['title'] = sanitize_text_field($new_instance['title']);
+        foreach (Viewer_Counter::display_keys() as $k) {
+            $instance['show_' . $k] = !empty($new_instance['show_' . $k]) ? 1 : 0;
+        }
         return $instance;
     }
 }
@@ -300,6 +894,9 @@ function viewer_counter_activate() {
         KEY visit_date (visit_date)
     ) {$charset};";
     dbDelta($sql);
+    if (false === get_option(VIEWER_COUNTER_OPTION)) {
+        add_option(VIEWER_COUNTER_OPTION, Viewer_Counter::default_settings());
+    }
 }
 
 register_activation_hook(__FILE__, 'viewer_counter_activate');
