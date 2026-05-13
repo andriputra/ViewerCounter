@@ -1,0 +1,13 @@
+<?php
+/**
+ * Buang jadual semasa nyahpasang plugin.
+ */
+
+if (!defined('WP_UNINSTALL_PLUGIN')) {
+    exit;
+}
+
+global $wpdb;
+$table = $wpdb->prefix . 'viewer_counter_visits';
+// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name from trusted prefix.
+$wpdb->query("DROP TABLE IF EXISTS {$table}");
