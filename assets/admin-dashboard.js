@@ -3,7 +3,17 @@
 
 	function makeChart(canvasId, type, chartData, extraOptions) {
 		var el = document.getElementById(canvasId);
-		if (!el || typeof Chart === 'undefined' || !chartData) {
+		if (!el || !chartData) {
+			return;
+		}
+		if (typeof Chart === 'undefined') {
+			if (!el.dataset.vcChartNotice) {
+				el.dataset.vcChartNotice = '1';
+				el.insertAdjacentHTML(
+					'afterend',
+					'<p class="description">Chart library is unavailable in this environment.</p>'
+				);
+			}
 			return;
 		}
 		var opts = {

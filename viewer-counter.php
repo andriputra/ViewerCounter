@@ -53,7 +53,8 @@ final class Viewer_Counter {
         if (empty($GLOBALS['pagenow']) || $GLOBALS['pagenow'] !== 'options-general.php') {
             return;
         }
-        if (isset($_GET['page']) && sanitize_key(wp_unslash($_GET['page'])) === 'viewer-counter') {
+        $page = filter_input(INPUT_GET, 'page', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+        if (is_string($page) && sanitize_key($page) === 'viewer-counter') {
             wp_safe_redirect(admin_url('admin.php?page=viewer-counter-settings'));
             exit;
         }
@@ -179,6 +180,12 @@ final class Viewer_Counter {
         $tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(wp_timezone_string());
         $today = current_time('Y-m-d');
         $today_dt = new DateTimeImmutable($today, $tz);
+        $def_from = $today_dt->modify('-29 days')->format('Y-m-d');
+
+        $nonce = isset($_GET['_vc_nonce']) ? sanitize_text_field(wp_unslash($_GET['_vc_nonce'])) : '';
+        if (!wp_verify_nonce($nonce, 'viewer_counter_dashboard_filter')) {
+            return array('from' => $def_from, 'to' => $today);
+        }
 
         if (!empty($_GET['vc_preset'])) {
             $preset = sanitize_key(wp_unslash($_GET['vc_preset']));
@@ -213,7 +220,6 @@ final class Viewer_Counter {
 
         $from_in = isset($_GET['vc_from']) ? sanitize_text_field(wp_unslash($_GET['vc_from'])) : '';
         $to_in = isset($_GET['vc_to']) ? sanitize_text_field(wp_unslash($_GET['vc_to'])) : '';
-        $def_from = $today_dt->modify('-29 days')->format('Y-m-d');
 
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from_in)) {
             $from_in = $def_from;
@@ -257,13 +263,16 @@ final class Viewer_Counter {
     public function get_series_daily($from, $to) {
         global $wpdb;
         $table = self::table_name();
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $sql = $wpdb->prepare(
-            "SELECT visit_date, COUNT(*) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY visit_date ORDER BY visit_date ASC",
-            $from,
-            $to
+        // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT visit_date, COUNT(*) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY visit_date ORDER BY visit_date ASC",
+                $from,
+                $to
+            ),
+            ARRAY_A
         );
-        $rows = $wpdb->get_results($sql, ARRAY_A);
+        // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $map = array();
         foreach ($rows as $r) {
             $map[$r['visit_date']] = (int) $r['c'];
@@ -306,13 +315,16 @@ final class Viewer_Counter {
     public function get_series_weekly($from, $to) {
         global $wpdb;
         $table = self::table_name();
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $sql = $wpdb->prepare(
-            "SELECT YEARWEEK(visit_date, 3) AS yw, COUNT(DISTINCT visitor_id) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY yw ORDER BY yw ASC",
-            $from,
-            $to
+        // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT YEARWEEK(visit_date, 3) AS yw, COUNT(DISTINCT visitor_id) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY yw ORDER BY yw ASC",
+                $from,
+                $to
+            ),
+            ARRAY_A
         );
-        $rows = $wpdb->get_results($sql, ARRAY_A);
+        // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $map = array();
         foreach ($rows as $r) {
             $map[(int) $r['yw']] = (int) $r['c'];
@@ -363,13 +375,16 @@ final class Viewer_Counter {
     public function get_series_monthly($from, $to) {
         global $wpdb;
         $table = self::table_name();
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $sql = $wpdb->prepare(
-            "SELECT DATE_FORMAT(visit_date, '%%Y-%%m') AS ym, COUNT(DISTINCT visitor_id) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY ym ORDER BY ym ASC",
-            $from,
-            $to
+        // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT DATE_FORMAT(visit_date, '%%Y-%%m') AS ym, COUNT(DISTINCT visitor_id) AS c FROM {$table} WHERE visit_date >= %s AND visit_date <= %s GROUP BY ym ORDER BY ym ASC",
+                $from,
+                $to
+            ),
+            ARRAY_A
         );
-        $rows = $wpdb->get_results($sql, ARRAY_A);
+        // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $map = array();
         foreach ($rows as $r) {
             $map[$r['ym']] = (int) $r['c'];
@@ -426,16 +441,9 @@ final class Viewer_Counter {
         }
         $payload = $this->get_dashboard_chart_payload();
         wp_enqueue_script(
-            'viewer-counter-chartjs',
-            'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
-            array(),
-            '4.4.1',
-            true
-        );
-        wp_enqueue_script(
             'viewer-counter-admin-dash',
             plugins_url('assets/admin-dashboard.js', __FILE__),
-            array('viewer-counter-chartjs'),
+            array(),
             VIEWER_COUNTER_VERSION,
             true
         );
@@ -454,6 +462,7 @@ final class Viewer_Counter {
         }
         $range = $this->parse_dashboard_date_range();
         $base = admin_url('admin.php?page=viewer-counter');
+        $dashboard_nonce = wp_create_nonce('viewer_counter_dashboard_filter');
         ?>
         <div class="wrap">
             <h1><?php esc_html_e('Viewer Counter — Dashboard', 'viewer-counter'); ?></h1>
@@ -473,7 +482,13 @@ final class Viewer_Counter {
                     'year'  => __('This year', 'viewer-counter'),
                 );
                 foreach ($presets as $key => $label) {
-                    $url = add_query_arg('vc_preset', $key, $base);
+                    $url = add_query_arg(
+                        array(
+                            'vc_preset'  => $key,
+                            '_vc_nonce' => $dashboard_nonce,
+                        ),
+                        $base
+                    );
                     echo '<a href="' . esc_url($url) . '">' . esc_html($label) . '</a> ';
                 }
                 ?>
@@ -481,6 +496,7 @@ final class Viewer_Counter {
 
             <form class="vc-dash-filters" method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>">
                 <input type="hidden" name="page" value="viewer-counter">
+                <?php wp_nonce_field('viewer_counter_dashboard_filter', '_vc_nonce'); ?>
                 <div>
                     <label for="vc_from"><?php esc_html_e('From', 'viewer-counter'); ?></label>
                     <input type="date" id="vc_from" name="vc_from" value="<?php echo esc_attr($range['from']); ?>" required>
@@ -613,7 +629,7 @@ final class Viewer_Counter {
         if (apply_filters('viewer_counter_skip_rate_limit', false)) {
             return false;
         }
-        $ip = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
         if ($ip === '') {
             return true;
         }
@@ -678,7 +694,7 @@ final class Viewer_Counter {
         if (!isset($_SERVER['HTTP_USER_AGENT']) || $_SERVER['HTTP_USER_AGENT'] === '') {
             return true;
         }
-        $ua_raw = (string) $_SERVER['HTTP_USER_AGENT'];
+        $ua_raw = sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT']));
         $max_ua = (int) apply_filters('viewer_counter_max_user_agent_length', VIEWER_COUNTER_MAX_UA_LENGTH);
         if ($max_ua > 0 && strlen($ua_raw) > $max_ua) {
             return true;
@@ -697,11 +713,11 @@ final class Viewer_Counter {
      * Lightweight fingerprint (not personal data) for visitors without a cookie yet.
      */
     private function get_request_fingerprint() {
-        $ip = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
         if (function_exists('wp_privacy_anonymize_ip')) {
             $ip = wp_privacy_anonymize_ip($ip);
         }
-        $ua = isset($_SERVER['HTTP_USER_AGENT']) ? (string) $_SERVER['HTTP_USER_AGENT'] : '';
+        $ua = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
         $max_ua = (int) apply_filters('viewer_counter_max_user_agent_length', VIEWER_COUNTER_MAX_UA_LENGTH);
         if ($max_ua > 0 && strlen($ua) > $max_ua) {
             $ua = substr($ua, 0, $max_ua);
@@ -715,20 +731,21 @@ final class Viewer_Counter {
         }
         return sprintf(
             '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0x0fff) | 0x4000,
-            mt_rand(0, 0x3fff) | 0x8000,
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff)
+            wp_rand(0, 0xffff),
+            wp_rand(0, 0xffff),
+            wp_rand(0, 0xffff),
+            wp_rand(0, 0x0fff) | 0x4000,
+            wp_rand(0, 0x3fff) | 0x8000,
+            wp_rand(0, 0xffff),
+            wp_rand(0, 0xffff),
+            wp_rand(0, 0xffff)
         );
     }
 
     private function get_or_create_visitor_id() {
         if (isset($_COOKIE[VIEWER_COUNTER_COOKIE]) && is_string($_COOKIE[VIEWER_COUNTER_COOKIE])) {
-            $id = preg_replace('/[^a-f0-9\-]/', '', strtolower($_COOKIE[VIEWER_COUNTER_COOKIE]));
+            $cookie_value = sanitize_text_field(wp_unslash($_COOKIE[VIEWER_COUNTER_COOKIE]));
+            $id = preg_replace('/[^a-f0-9\-]/', '', strtolower($cookie_value));
             if ($this->is_valid_visitor_uuid($id)) {
                 return $id;
             }
@@ -794,6 +811,7 @@ final class Viewer_Counter {
         $today = current_time('Y-m-d');
 
         // At most one row per visitor per calendar day.
+        // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $wpdb->query(
             $wpdb->prepare(
                 "INSERT IGNORE INTO {$table} (visitor_id, visit_date) VALUES (%s, %s)",
@@ -801,6 +819,7 @@ final class Viewer_Counter {
                 $today
             )
         );
+        // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
     }
 
     public function get_counts($keys = null) {
@@ -818,6 +837,7 @@ final class Viewer_Counter {
         $week_start = (new DateTimeImmutable($today, $tz))->modify('-6 days')->format('Y-m-d');
         $month_start = current_time('Y-m-01');
 
+        // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         if (in_array('daily', $want, true)) {
             $result['daily'] = (int) $wpdb->get_var(
                 $wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE visit_date = %s", $today)
@@ -842,9 +862,9 @@ final class Viewer_Counter {
             );
         }
         if (in_array('total', $want, true)) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name from $wpdb->prefix only.
             $result['total'] = (int) $wpdb->get_var("SELECT COUNT(DISTINCT visitor_id) FROM {$table}");
         }
+        // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
         return $result;
     }
@@ -921,9 +941,10 @@ class Viewer_Counter_Widget extends WP_Widget {
     }
 
     public function widget($args, $instance) {
-        echo $args['before_widget'];
+        echo wp_kses_post($args['before_widget']);
         if (!empty($instance['title'])) {
-            echo $args['before_title'] . apply_filters('widget_title', $instance['title']) . $args['after_title'];
+            $title = apply_filters('widget_title', $instance['title'], $instance, $this->id_base);
+            echo wp_kses_post($args['before_title']) . esc_html($title) . wp_kses_post($args['after_title']);
         }
         wp_enqueue_style('viewer-counter');
         $flags = array();
@@ -937,7 +958,7 @@ class Viewer_Counter_Widget extends WP_Widget {
         if ($text !== '') {
             echo '<p class="viewer-counter">' . esc_html($text) . '</p>';
         }
-        echo $args['after_widget'];
+        echo wp_kses_post($args['after_widget']);
     }
 
     public function form($instance) {
